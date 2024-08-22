@@ -4,32 +4,11 @@
 
 namespace BIA.Net.Queue.Domain.Dto.Queue
 {
-    using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Text;
-    using System.Threading.Tasks;
-
     /// <summary>
-    /// Dto to define address of RabbitMQ server and topic.
+    /// Dto to define address of RabbitMQ server with headers type for exchange.
     /// </summary>
-    public class TopicDto
+    public class TopicDto : QueueDto
     {
-        /// <summary>
-        /// The RabbitMQ server URI.
-        /// </summary>
-        public string Endpoint { get; set; }
-
-        /// <summary>
-        /// The Virtual Host.
-        /// </summary>
-        public string VirtualHost { get; set; }
-
-        /// <summary>
-        /// The exchange to listen.
-        /// </summary>
-        public string Exchange { get; set; }
-
         /// <summary>
         /// The rabbitMQ routing key to listen.
         /// </summary>
