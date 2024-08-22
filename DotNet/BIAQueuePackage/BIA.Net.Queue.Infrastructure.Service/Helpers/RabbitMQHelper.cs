@@ -5,7 +5,9 @@
 namespace BIA.Net.Queue.Infrastructure.Service.Helpers
 {
     using System;
+    using System.Collections.Generic;
     using System.IO;
+    using System.Text.Json;
     using System.Threading;
     using System.Threading.Tasks;
     using System.Xml.Serialization;
@@ -85,6 +87,101 @@ namespace BIA.Net.Queue.Infrastructure.Service.Helpers
                 queue: queueName,
                 exchange: topic.Exchange,
                 routingKey: topic.RoutingKey);
+
+            channel.BasicConsume(
+                queue: queueName,
+                autoAck: true,
+                consumer: consumer);
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Send Message to a specific endpoint.
+        /// </summary>
+        /// <param name="header">The name of the header. Example : DM.VMR.eZTest (limit to 255).</param>
+        /// <param name="body">The message body.</param>
+        /// <param name="user">The optional username.</param>
+        /// <param name="password">The optional password.</param>
+        /// <returns>The result of the sending.</returns>
+        public static bool SendMessage(HeadersDto header, object body, string user = null, string password = null)
+        {
+            ConnectionFactory connectionFactory = new ConnectionFactory { UserName = user, Password = password, VirtualHost = header.VirtualHost ?? "/", HostName = header.Endpoint, Port = AmqpTcpEndpoint.UseDefaultPort };
+            using IConnection connection = connectionFactory.CreateConnection();
+            using IModel channel = connection.CreateModel();
+            channel.ExchangeDeclare(exchange: header.Exchange, durable: true, type: ExchangeType.Headers);
+
+            var headers = new Dictionary<string, object>();
+            foreach (var headerProperties in header.Headers)
+            {
+                headers[headerProperties.Key] = headerProperties.Value;
+            }
+
+            var basicProps = channel.CreateBasicProperties();
+            basicProps.Headers = headers;
+
+            using MemoryStream stream = new MemoryStream();
+#pragma warning disable SYSLIB0011 // Type or member is obsolete
+            XmlSerializer xmlSerializer = new(body.GetType());
+            xmlSerializer.Serialize(stream, body);
+#pragma warning restore SYSLIB0011 // Type or member is obsolete
+            byte[] bytes = stream.ToArray();
+            channel.BasicPublish(
+                exchange: header.Exchange,
+                routingKey: string.Empty,
+                basicProperties: basicProps,
+                body: bytes);
+
+            return true;
+        }
+
+        /// <summary>
+        /// Receive a message.
+        /// </summary>
+        /// <typeparam name="T">The type of the body.</typeparam>
+        /// <param name="header">the global topic information to listen.</param>
+        /// <param name="action">The action to perform.</param>
+        /// <param name="cancellationToken">A token to cancel the receive.</param>
+        /// <param name="user">The optional username.</param>
+        /// <param name="password">The optional password.</param>
+        /// <returns>A <see cref="Task"/>.</returns>
+        public static async Task ReceiveMessageAsync<T>(HeadersDto header, Action<T> action, CancellationToken cancellationToken, string user = null, string password = null)
+            where T : class
+        {
+            ConnectionFactory connectionFactory = new ConnectionFactory { UserName = user, Password = password, VirtualHost = header.VirtualHost, HostName = header.Endpoint, Port = AmqpTcpEndpoint.UseDefaultPort };
+            using IConnection connection = connectionFactory.CreateConnection();
+            using IModel channel = connection.CreateModel();
+            channel.ExchangeDeclare(exchange: header.Exchange, durable: true, type: ExchangeType.Headers);
+
+            var headers = new Dictionary<string, object>();
+            foreach (var headerProperties in header.Headers)
+            {
+                headers[headerProperties.Key] = headerProperties.Value;
+            }
+
+            string queueName = channel.QueueDeclare(queue: $"{header.QueueName}", durable: true, exclusive: false, autoDelete: false).QueueName;
+
+            EventingBasicConsumer consumer = new(channel);
+            consumer.Received += (model, ea) =>
+            {
+                byte[] body = ea.Body.ToArray();
+
+                using MemoryStream stream = new(body);
+                XmlSerializer xmlSerializer = new(typeof(T));
+                if (xmlSerializer.Deserialize(stream) is T result)
+                {
+                    action.Invoke(result);
+                }
+            };
+
+            channel.QueueBind(
+                queue: queueName,
+                exchange: header.Exchange,
+                routingKey: string.Empty,
+                arguments: headers);
 
             channel.BasicConsume(
                 queue: queueName,
