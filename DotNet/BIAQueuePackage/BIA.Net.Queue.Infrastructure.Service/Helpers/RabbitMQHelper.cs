@@ -6,7 +6,10 @@ namespace BIA.Net.Queue.Infrastructure.Service.Helpers
 {
     using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.IO;
+    using System.Reflection;
+    using System.Text;
     using System.Text.Json;
     using System.Threading;
     using System.Threading.Tasks;
@@ -109,7 +112,7 @@ namespace BIA.Net.Queue.Infrastructure.Service.Helpers
         /// <returns>The result of the sending.</returns>
         public static bool SendMessage(HeadersDto header, object body, string user = null, string password = null)
         {
-            ConnectionFactory connectionFactory = new ConnectionFactory { UserName = user, Password = password, VirtualHost = header.VirtualHost ?? "/", HostName = header.Endpoint, Port = AmqpTcpEndpoint.UseDefaultPort };
+            ConnectionFactory connectionFactory = new ConnectionFactory { UserName = user, Password = password, VirtualHost = header.VirtualHost ?? "/", HostName = header.Endpoint, Port = header.Port != 0 ? header.Port : AmqpTcpEndpoint.UseDefaultPort };
             using IConnection connection = connectionFactory.CreateConnection();
             using IModel channel = connection.CreateModel();
             channel.ExchangeDeclare(exchange: header.Exchange, durable: true, type: ExchangeType.Headers);
@@ -122,6 +125,7 @@ namespace BIA.Net.Queue.Infrastructure.Service.Helpers
 
             var basicProps = channel.CreateBasicProperties();
             basicProps.Headers = headers;
+            basicProps.DeliveryMode = 2;
 
             using MemoryStream stream = new MemoryStream();
 #pragma warning disable SYSLIB0011 // Type or member is obsolete
@@ -151,7 +155,7 @@ namespace BIA.Net.Queue.Infrastructure.Service.Helpers
         public static async Task ReceiveMessageAsync<T>(HeadersDto header, Action<T> action, CancellationToken cancellationToken, string user = null, string password = null)
             where T : class
         {
-            ConnectionFactory connectionFactory = new ConnectionFactory { UserName = user, Password = password, VirtualHost = header.VirtualHost, HostName = header.Endpoint, Port = AmqpTcpEndpoint.UseDefaultPort };
+            ConnectionFactory connectionFactory = new ConnectionFactory { UserName = user, Password = password, VirtualHost = header.VirtualHost, HostName = header.Endpoint, Port = header.Port != 0 ? header.Port : AmqpTcpEndpoint.UseDefaultPort };
             using IConnection connection = connectionFactory.CreateConnection();
             using IModel channel = connection.CreateModel();
             channel.ExchangeDeclare(exchange: header.Exchange, durable: true, type: ExchangeType.Headers);
@@ -162,31 +166,39 @@ namespace BIA.Net.Queue.Infrastructure.Service.Helpers
                 headers[headerProperties.Key] = headerProperties.Value;
             }
 
-            string queueName = channel.QueueDeclare(queue: $"{header.QueueName}", durable: true, exclusive: false, autoDelete: false).QueueName;
+            string queueName = $"{header.QueueName}Queue";
+            string source = header.Headers["Destination"];
 
             EventingBasicConsumer consumer = new(channel);
             consumer.Received += (model, ea) =>
             {
-                byte[] body = ea.Body.ToArray();
-
-                using MemoryStream stream = new(body);
-                XmlSerializer xmlSerializer = new(typeof(T));
-                if (xmlSerializer.Deserialize(stream) is T result)
+                // Consumes the message filtered by header destination.
+                if (ea.BasicProperties.Headers != null &&
+                ea.BasicProperties.Headers.ContainsKey("Destination") &&
+                ea.BasicProperties.Headers["Destination"] is byte[] headerValue &&
+                Encoding.UTF8.GetString(headerValue) == source)
                 {
-                    action.Invoke(result);
+                    byte[] body = ea.Body.ToArray();
+
+                    using MemoryStream stream = new(body);
+                    XmlSerializer xmlSerializer = new(typeof(T));
+                    if (xmlSerializer.Deserialize(stream) is T result)
+                    {
+                        action.Invoke(result);
+                    }
+                    channel.BasicAck(deliveryTag: ea.DeliveryTag, multiple: false);
+                }
+                else
+                {
+                    channel.BasicNack(deliveryTag: ea.DeliveryTag, multiple: false, requeue: true);
                 }
             };
 
-            channel.QueueBind(
-                queue: queueName,
-                exchange: header.Exchange,
-                routingKey: string.Empty,
-                arguments: headers);
-
             channel.BasicConsume(
                 queue: queueName,
-                autoAck: true,
+                autoAck: false,
                 consumer: consumer);
+
 
             while (!cancellationToken.IsCancellationRequested)
             {
