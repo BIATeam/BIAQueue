@@ -15,6 +15,11 @@ namespace BIA.Net.Queue.Domain.Dto.Queue
         public string Endpoint { get; set; }
 
         /// <summary>
+        /// The RabbitMQ port.
+        /// </summary>
+        public int Port { get; set; }
+
+        /// <summary>
         /// The Virtual Host.
         /// </summary>
         public string VirtualHost { get; set; }
